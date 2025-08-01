@@ -5,6 +5,7 @@
 #include "button.h"
 #include "config.h"
 #include "i2c_device.h"
+#include "led/ws2812_led.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -19,6 +20,7 @@ class Esp32S3Korvo1V5Board : public WifiBoard {
 private:
     Button boot_button_;
     i2c_master_bus_handle_t i2c_bus_;
+    WS2812Led* ws2812_led_;
 
     void InitializeI2c() {
         // 初始化I2C外设 - 用于音频编解码器
@@ -87,15 +89,28 @@ private:
 #endif
     }
 
+    void InitializeWS2812() {
+        ws2812_led_ = new WS2812Led(WS2812_LED_GPIO, WS2812_LED_COUNT);
+        ESP_LOGI(TAG, "WS2812 LED initialized: GPIO=%d, LED count=%d", WS2812_LED_GPIO, WS2812_LED_COUNT);
+    }
+
 public:
-    Esp32S3Korvo1V5Board() : boot_button_(BOOT_BUTTON_GPIO) {
+    Esp32S3Korvo1V5Board() : boot_button_(BOOT_BUTTON_GPIO), ws2812_led_(nullptr) {
         ESP_LOGI(TAG, "Initializing ESP32-S3-KORVO1-V5 Board");
-        ESP_LOGI(TAG, "Hardware features: 3-array microphone, ES8311+ES7210 codecs, no display, no camera");
+        ESP_LOGI(TAG, "Hardware features: 3-array microphone, ES8311+ES7210 codecs, WS2812 LEDs, no display, no camera");
         
         InitializeI2c();
         I2cDetect();
         InitializeButtons();
+        InitializeWS2812();
         ESP_LOGI(TAG, "KORVO1-V5 board initialization completed");
+    }
+
+    ~Esp32S3Korvo1V5Board() {
+        if (ws2812_led_) {
+            delete ws2812_led_;
+            ws2812_led_ = nullptr;
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -136,6 +151,10 @@ public:
     
     virtual Camera* GetCamera() override {
         return nullptr;  // KORVO1 V5 没有摄像头
+    }
+    
+    virtual Led* GetLed() override {
+        return ws2812_led_;  // 返回WS2812 LED实例
     }
 };
 

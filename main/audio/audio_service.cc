@@ -1,5 +1,6 @@
 #include "audio_service.h"
 #include <esp_log.h>
+#include <cmath>
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "processors/afe_audio_processor.h"
@@ -60,6 +61,8 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        // 计算音量级别
+        CalculateVolumeLevel(data);
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
@@ -295,6 +298,10 @@ void AudioService::AudioOutputTask() {
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
         debug_statistics_.playback_count++;
+        
+        // 计算输出音频的音量级别
+        ESP_LOGI(TAG, "AudioOutputTask: processing output audio, pcm_size=%d", task->pcm.size());
+        CalculateVolumeLevel(task->pcm);
 
 #if CONFIG_USE_SERVER_AEC
         /* Record the timestamp for server AEC */
@@ -567,15 +574,67 @@ void AudioService::ResetDecoder() {
 
 void AudioService::CheckAndUpdateAudioPowerState() {
     auto now = std::chrono::steady_clock::now();
-    auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
-    auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
-    if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
-        codec_->EnableInput(false);
+    auto input_duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
+    auto output_duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
+
+    if (input_duration > AUDIO_POWER_TIMEOUT_MS && output_duration > AUDIO_POWER_TIMEOUT_MS) {
+        // 如果长时间没有音频输入输出，禁用音频编解码器以节省功耗
+        if (codec_->input_enabled()) {
+            codec_->EnableInput(false);
+        }
+        if (codec_->output_enabled()) {
+            codec_->EnableOutput(false);
+        }
     }
-    if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-        codec_->EnableOutput(false);
+}
+
+void AudioService::CalculateVolumeLevel(const std::vector<int16_t>& audio_data) {
+    if (audio_data.empty()) {
+        current_volume_level_ = 0;
+        return;
     }
-    if (!codec_->input_enabled() && !codec_->output_enabled()) {
-        esp_timer_stop(audio_power_timer_);
+    
+    // 计算音频振幅（峰值）
+    int16_t max_amplitude = 0;
+    for (int16_t sample : audio_data) {
+        int16_t abs_sample = abs(sample);
+        if (abs_sample > max_amplitude) {
+            max_amplitude = abs_sample;
+        }
+    }
+    
+    // 将振幅转换为0-255的音量级别
+    // 16位音频的最大值是32767
+    double normalized_amplitude = static_cast<double>(max_amplitude) / 32767.0;
+    uint16_t new_level = static_cast<uint16_t>(normalized_amplitude * 255.0);
+    
+    // 让音量更敏感，降低检测阈值
+    if (new_level > 0) {
+        // 使用对数映射，让低音量更敏感
+        double log_amplitude = log10(normalized_amplitude * 100 + 1) / log10(101); // 映射到0-1
+        new_level = static_cast<uint16_t>(log_amplitude * 255.0);
+        
+        // 进一步放大低音量信号
+        if (new_level > 0) {
+            new_level = std::max<uint16_t>(10, new_level * 2); // 最小10，放大2倍
+            if (new_level > 255) new_level = 255;
+        }
+    }
+    
+    // 添加一些平滑处理，避免音量变化过于剧烈
+    if (new_level > current_volume_level_) {
+        // 音量上升时快速响应
+        current_volume_level_ = (current_volume_level_ * 3 + new_level * 7) / 10;
+    } else {
+        // 音量衰减时慢一些
+        current_volume_level_ = (current_volume_level_ * 8 + new_level * 2) / 10;
+    }
+    
+    ESP_LOGI(TAG, "CalculateVolumeLevel: max_amplitude=%d, normalized=%.3f, level=%d", 
+             max_amplitude, normalized_amplitude, current_volume_level_);
+    
+    // 调用音量回调函数
+    if (volume_callback_) {
+        volume_callback_(current_volume_level_);
     }
 }

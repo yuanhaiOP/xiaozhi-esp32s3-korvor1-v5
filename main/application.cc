@@ -8,6 +8,7 @@
 #include "font_awesome_symbols.h"
 #include "assets/lang_config.h"
 #include "mcp_server.h"
+#include "led/ws2812_led.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -361,6 +362,11 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     audio_service_.SetCallbacks(callbacks);
+    
+    // 设置音量回调
+    audio_service_.SetVolumeCallback([this](uint8_t level) {
+        UpdateVoiceLevel(level);
+    });
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -687,6 +693,26 @@ void Application::SetDeviceState(DeviceState state) {
             }
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            
+            // 停止语音效果
+            if (led) {
+                if (auto ws2812_led = static_cast<WS2812Led*>(led)) {
+                    Schedule([ws2812_led]() {
+                        vTaskDelay(pdMS_TO_TICKS(100)); // 延迟100ms
+                        ws2812_led->StopVoiceEffect();
+                    });
+                }
+            }
+            
+            // 延迟启动呼吸灯效果
+            if (led) {
+                Schedule([led]() {
+                    vTaskDelay(pdMS_TO_TICKS(2000)); // 延迟2秒，确保RMT通道稳定
+                    if (auto ws2812_led = static_cast<WS2812Led*>(led)) {
+                        ws2812_led->StartBreathingEffect();
+                    }
+                });
+            }
             break;
         case kDeviceStateConnecting:
             if (display) {
@@ -708,6 +734,13 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.EnableVoiceProcessing(true);
                 audio_service_.EnableWakeWordDetection(false);
             }
+            
+            // 启动用户输入语音效果
+            if (led) {
+                if (auto ws2812_led = static_cast<WS2812Led*>(led)) {
+                    ws2812_led->StartVoiceInputEffect();
+                }
+            }
             break;
         case kDeviceStateSpeaking:
             if (display) {
@@ -724,6 +757,13 @@ void Application::SetDeviceState(DeviceState state) {
 #endif
             }
             audio_service_.ResetDecoder();
+            
+            // 启动系统输出语音效果
+            if (led) {
+                if (auto ws2812_led = static_cast<WS2812Led*>(led)) {
+                    ws2812_led->StartVoiceOutputEffect();
+                }
+            }
             break;
         default:
             // Do nothing
@@ -813,4 +853,14 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
+}
+
+void Application::UpdateVoiceLevel(uint8_t level) {
+    auto& board = Board::GetInstance();
+    auto led = board.GetLed();
+    if (led) {
+        if (auto ws2812_led = static_cast<WS2812Led*>(led)) {
+            ws2812_led->UpdateVoiceLevel(level);
+        }
+    }
 }

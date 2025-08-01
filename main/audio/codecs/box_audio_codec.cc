@@ -6,47 +6,6 @@
 #include <driver/i2s_std.h>
 #include <algorithm>
 
-// ES8311 寄存器定义
-#define ES8311_RESET_REG00       0x00
-#define ES8311_CLK_MANAGER_REG01 0x01
-#define ES8311_CLK_MANAGER_REG02 0x02
-#define ES8311_CLK_MANAGER_REG03 0x03
-#define ES8311_CLK_MANAGER_REG04 0x04
-#define ES8311_CLK_MANAGER_REG05 0x05
-#define ES8311_CLK_MANAGER_REG06 0x06
-#define ES8311_CLK_MANAGER_REG07 0x07
-#define ES8311_CLK_MANAGER_REG08 0x08
-#define ES8311_SDPIN_REG09       0x09
-#define ES8311_SDPOUT_REG0A      0x0A
-#define ES8311_SYSTEM_REG0B      0x0B
-#define ES8311_SYSTEM_REG0C      0x0C
-#define ES8311_SYSTEM_REG0D      0x0D
-#define ES8311_SYSTEM_REG0E      0x0E
-#define ES8311_SYSTEM_REG0F      0x0F
-#define ES8311_SYSTEM_REG10      0x10
-#define ES8311_SYSTEM_REG11      0x11
-#define ES8311_SYSTEM_REG12      0x12
-#define ES8311_SYSTEM_REG13      0x13
-#define ES8311_SYSTEM_REG14      0x14
-#define ES8311_ADC_REG15         0x15
-#define ES8311_ADC_REG16         0x16
-#define ES8311_ADC_REG17         0x17
-#define ES8311_ADC_REG18         0x18
-#define ES8311_ADC_REG19         0x19
-#define ES8311_ADC_REG1A         0x1A
-#define ES8311_ADC_REG1B         0x1B
-#define ES8311_ADC_REG1C         0x1C
-#define ES8311_DAC_REG31         0x31
-#define ES8311_DAC_REG32         0x32
-#define ES8311_DAC_REG33         0x33
-#define ES8311_DAC_REG34         0x34
-#define ES8311_DAC_REG35         0x35
-#define ES8311_DAC_REG37         0x37
-#define ES8311_GPIO_REG44        0x44
-#define ES8311_GP_REG45          0x45
-#define ES8311_CHD1_REGFD        0xFD
-#define ES8311_CHD2_REGFE        0xFE
-#define ES8311_CHVER_REGFF       0xFF
 
 #define TAG "BoxAudioCodec"
 
@@ -316,23 +275,6 @@ void BoxAudioCodec::EnableOutput(bool enable) {
     if (enable) {
         ESP_LOGI(TAG, "Enabling ES8311 output...");
         
-        // 检查 PA 引脚配置
-        ESP_LOGI(TAG, "PA pin: %d, PA reverted: %s", 
-                 pa_pin_, pa_reverted_ ? "true" : "false");
-        
-                       // 检查 PA 引脚状态（只监控，不控制）
-               if (pa_pin_ != GPIO_NUM_NC) {
-                   int pa_level = gpio_get_level(pa_pin_);
-                   ESP_LOGI(TAG, "PA pin (GPIO %d) level: %d", pa_pin_, pa_level);
-                   
-                   // 检查 PA 引脚状态
-                   if (pa_level == 0) {
-                       ESP_LOGW(TAG, "PA pin is LOW - ES8311 driver may not have enabled it yet");
-                   } else {
-                       ESP_LOGI(TAG, "PA pin is HIGH - ES8311 driver has enabled amplifier");
-                   }
-               }
-        
         // Play 16bit 1 channel
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
@@ -341,19 +283,6 @@ void BoxAudioCodec::EnableOutput(bool enable) {
             .sample_rate = (uint32_t)output_sample_rate_,
             .mclk_multiple = 0,
         };
-        ESP_LOGI(TAG, "Audio format: %d bits, %d channels, %lu Hz", 
-                 fs.bits_per_sample, fs.channel, (unsigned long)fs.sample_rate);
-        
-        // 检查音频格式是否与 ES8311 兼容
-        if (fs.bits_per_sample != 16) {
-            ESP_LOGW(TAG, "Warning: ES8311 expects 16-bit samples, got %d-bit", fs.bits_per_sample);
-        }
-        if (fs.channel != 1) {
-            ESP_LOGW(TAG, "Warning: ES8311 expects 1 channel, got %d channels", fs.channel);
-        }
-        if (fs.sample_rate != 24000) {
-            ESP_LOGW(TAG, "Warning: ES8311 expects 24kHz, got %lu Hz", (unsigned long)fs.sample_rate);
-        }
         
         ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
@@ -363,9 +292,6 @@ void BoxAudioCodec::EnableOutput(bool enable) {
         // 设置最大音量
         ESP_LOGI(TAG, "Setting ES8311 volume to maximum...");
         esp_codec_dev_set_out_vol(output_dev_, 100);
-        
-        // 检查 ES8311 寄存器状态（仅用于调试）
-        CheckES8311Registers();
         
         ESP_LOGI(TAG, "ES8311 output enabled successfully");
         
@@ -394,126 +320,17 @@ int BoxAudioCodec::Read(int16_t* dest, int samples) {
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
     if (output_enabled_) {
-        static int total_samples_written = 0;
-        total_samples_written += samples;
-        
-        // 详细的音频数据检查
-        bool has_audio_data = false;
-        int16_t max_sample = 0;
-        int16_t min_sample = 0;
-        int non_zero_count = 0;
-        
-        for (int i = 0; i < samples && i < 100; i++) {
-            if (data[i] != 0) {
-                has_audio_data = true;
-                non_zero_count++;
-                max_sample = (data[i] > max_sample) ? data[i] : max_sample;
-                min_sample = (data[i] < min_sample) ? data[i] : min_sample;
-            }
-        }
-        
-        ESP_LOGI(TAG, "Audio data: has_audio=%s, non_zero=%d/%d, range=[%d, %d]", 
-                 has_audio_data ? "YES" : "NO", non_zero_count, samples, min_sample, max_sample);
-        
         // 检查I2S写入结果
         esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t));
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "esp_codec_dev_write failed: %s", esp_err_to_name(ret));
         } else {
             ESP_LOGD(TAG, "I2S write successful: %d bytes", samples * sizeof(int16_t));
-            
-            // 检查音频数据是否真的被写入
-            static int total_bytes_written = 0;
-            total_bytes_written += samples * sizeof(int16_t);
-            
-            // 每10000个样本检查一次
-            static int sample_count = 0;
-            sample_count += samples;
-            if (sample_count >= 10000) {
-                ESP_LOGI(TAG, "Audio data flow: %d bytes written, %d samples processed", 
-                         total_bytes_written, sample_count);
-                sample_count = 0;
-            }
-            
-                               // 每1000次写入检查一次ES8311状态
-                   static int write_count = 0;
-                   write_count++;
-                   if (write_count % 1000 == 0) {
-                       ESP_LOGI(TAG, "ES8311 write count: %d, total samples: %d", write_count, total_samples_written);
-                       
-                       // 检查 PA 引脚状态
-                       if (pa_pin_ != GPIO_NUM_NC) {
-                           int pa_level = gpio_get_level(pa_pin_);
-                           if (pa_level == 0) {
-                               ESP_LOGW(TAG, "PA pin level during playback: %d (LOW - might be issue)", pa_level);
-                           } else {
-                               ESP_LOGI(TAG, "PA pin level during playback: %d (HIGH - normal)", pa_level);
-                           }
-                       }
-                       
-                       // 定期检查 ES8311 寄存器状态
-                       if (write_count % 5000 == 0) {
-                           CheckES8311Registers();
-                       }
-                   }
         }
     } else {
         ESP_LOGW(TAG, "Output not enabled, cannot write audio data");
     }
     return samples;
-}
-
-void BoxAudioCodec::CheckES8311Registers() {
-    ESP_LOGI(TAG, "=== ES8311 Register Check ===");
-    
-    // 暂时简化，只检查控制接口是否可用
-    if (out_ctrl_if_ && out_ctrl_if_->read_reg) {
-        ESP_LOGI(TAG, "ES8311 control interface is available");
-        
-        // 尝试读取芯片 ID
-        uint8_t chip_id1 = 0, chip_id2 = 0, version = 0;
-        esp_err_t ret1 = out_ctrl_if_->read_reg(out_ctrl_if_, ES8311_CHD1_REGFD, 1, &chip_id1, 1);
-        esp_err_t ret2 = out_ctrl_if_->read_reg(out_ctrl_if_, ES8311_CHD2_REGFE, 1, &chip_id2, 1);
-        esp_err_t ret3 = out_ctrl_if_->read_reg(out_ctrl_if_, ES8311_CHVER_REGFF, 1, &version, 1);
-        
-        if (ret1 == ESP_OK && ret2 == ESP_OK && ret3 == ESP_OK) {
-            ESP_LOGI(TAG, "Chip ID: 0x%02x 0x%02x, Version: 0x%02x", chip_id1, chip_id2, version);
-        } else {
-            ESP_LOGE(TAG, "Failed to read chip ID: ret1=%d, ret2=%d, ret3=%d", ret1, ret2, ret3);
-        }
-        
-                       // 尝试读取 DAC 音量寄存器
-               uint8_t dac_volume = 0;
-               esp_err_t ret_vol = out_ctrl_if_->read_reg(out_ctrl_if_, ES8311_DAC_REG32, 1, &dac_volume, 1);
-               if (ret_vol == ESP_OK) {
-                   ESP_LOGI(TAG, "DAC Volume Register: 0x%02x", dac_volume);
-               } else {
-                   ESP_LOGE(TAG, "Failed to read DAC volume register: %d", ret_vol);
-               }
-               
-               // 检查 DAC 输出使能寄存器
-               uint8_t dac_output_enable = 0;
-               esp_err_t ret_out = out_ctrl_if_->read_reg(out_ctrl_if_, ES8311_DAC_REG31, 1, &dac_output_enable, 1);
-               if (ret_out == ESP_OK) {
-                   ESP_LOGI(TAG, "DAC Output Enable Register: 0x%02x", dac_output_enable);
-               } else {
-                   ESP_LOGE(TAG, "Failed to read DAC output enable register: %d", ret_out);
-               }
-               
-               // 检查系统控制寄存器
-               uint8_t system_ctrl = 0;
-               esp_err_t ret_sys = out_ctrl_if_->read_reg(out_ctrl_if_, ES8311_SYSTEM_REG0D, 1, &system_ctrl, 1);
-               if (ret_sys == ESP_OK) {
-                   ESP_LOGI(TAG, "System Control Register: 0x%02x", system_ctrl);
-               } else {
-                   ESP_LOGE(TAG, "Failed to read system control register: %d", ret_sys);
-               }
-        
-    } else {
-        ESP_LOGE(TAG, "Cannot read ES8311 registers - control interface not available");
-    }
-    
-    ESP_LOGI(TAG, "=== End ES8311 Register Check ===");
 }
 
 void BoxAudioCodec::CreateES7210Channels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din) {

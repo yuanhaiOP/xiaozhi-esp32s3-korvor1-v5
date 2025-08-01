@@ -38,6 +38,10 @@
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_NC
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_NC
 
+// KORVO1 V5 WS2812 LED配置
+#define WS2812_LED_GPIO         GPIO_NUM_19  // WS2812数据引脚
+#define WS2812_LED_COUNT        12           // WS2812 LED数量
+
 // KORVO1 V5 没有显示屏
 #define DISPLAY_WIDTH   0
 #define DISPLAY_HEIGHT  0

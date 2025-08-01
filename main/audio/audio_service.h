@@ -98,8 +98,11 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
-
     void SetCallbacks(AudioServiceCallbacks& callbacks);
+    
+    // 音量相关
+    uint8_t GetCurrentVolumeLevel() const { return current_volume_level_; }
+    void SetVolumeCallback(std::function<void(uint8_t)> callback) { volume_callback_ = callback; }
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
@@ -147,6 +150,11 @@ private:
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;
     std::chrono::steady_clock::time_point last_output_time_;
+    
+    // 音量相关
+    uint8_t current_volume_level_ = 0;
+    std::function<void(uint8_t)> volume_callback_ = nullptr;
+    void CalculateVolumeLevel(const std::vector<int16_t>& audio_data);
 
     void AudioInputTask();
     void AudioOutputTask();
