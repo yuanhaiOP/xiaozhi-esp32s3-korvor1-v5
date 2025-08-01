@@ -17,15 +17,26 @@ private:
 
     esp_codec_dev_handle_t output_dev_ = nullptr;
     esp_codec_dev_handle_t input_dev_ = nullptr;
+    gpio_num_t pa_pin_ = GPIO_NUM_NC;  // 功放使能引脚
+    bool pa_reverted_ = false;  // PA 引脚是否反转
 
+    // 两个独立的 I2S 通道句柄
+    i2s_chan_handle_t es7210_rx_handle_ = nullptr;  // ES7210 只需要 RX 通道
+    i2s_chan_handle_t es8311_tx_handle_ = nullptr;  // ES8311 只需要 TX 通道
+
+    void CreateES7210Channels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
+    void CreateES8311Channels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout);
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
 
     virtual int Read(int16_t* dest, int samples) override;
     virtual int Write(const int16_t* data, int samples) override;
+    
+    void CheckES8311Registers();  // 检查 ES8311 寄存器状态
 
 public:
     BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int output_sample_rate,
         gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
+        gpio_num_t es8311_mclk, gpio_num_t es8311_bclk, gpio_num_t es8311_ws, gpio_num_t es8311_dout,
         gpio_num_t pa_pin, uint8_t es8311_addr, uint8_t es7210_addr, bool input_reference);
     virtual ~BoxAudioCodec();
 
