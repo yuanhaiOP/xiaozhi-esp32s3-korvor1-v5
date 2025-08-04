@@ -300,7 +300,7 @@ void AudioService::AudioOutputTask() {
         debug_statistics_.playback_count++;
         
         // 计算输出音频的音量级别
-        ESP_LOGI(TAG, "AudioOutputTask: processing output audio, pcm_size=%d", task->pcm.size());
+        // ESP_LOGI(TAG, "AudioOutputTask: processing output audio, pcm_size=%d", task->pcm.size());
         CalculateVolumeLevel(task->pcm);
 
 #if CONFIG_USE_SERVER_AEC
@@ -630,8 +630,8 @@ void AudioService::CalculateVolumeLevel(const std::vector<int16_t>& audio_data) 
         current_volume_level_ = (current_volume_level_ * 8 + new_level * 2) / 10;
     }
     
-    ESP_LOGI(TAG, "CalculateVolumeLevel: max_amplitude=%d, normalized=%.3f, level=%d", 
-             max_amplitude, normalized_amplitude, current_volume_level_);
+    // ESP_LOGI(TAG, "CalculateVolumeLevel: max_amplitude=%d, normalized=%.3f, level=%d", 
+    //          max_amplitude, normalized_amplitude, current_volume_level_);
     
     // 调用音量回调函数
     if (volume_callback_) {

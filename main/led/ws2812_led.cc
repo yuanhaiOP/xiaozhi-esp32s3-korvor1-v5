@@ -80,7 +80,7 @@ void WS2812Led::DeinitLedStrip() {
 void WS2812Led::OnStateChanged() {
     // 这里可以根据设备状态改变LED效果
     // 暂时不立即点亮LED，等待具体的状态变化
-    ESP_LOGI(TAG, "WS2812 LED state changed - ready for control");
+    // ESP_LOGI(TAG, "WS2812 LED state changed - ready for control");
 }
 
 void WS2812Led::TurnOn() {
@@ -451,22 +451,17 @@ void WS2812Led::VoiceEffectTask(void* param) {
         // 计算最大距离（从中心到最远处的LED）
         uint16_t max_distance = led->led_count_ / 2;
         
-        // 根据音量级别计算活跃范围，确保音量最大时能覆盖所有LED
-        uint16_t active_leds = (level * max_distance) / 255;
-        if (active_leds > max_distance) active_leds = max_distance;
+        // 根据音量级别计算应该点亮的LED数量
+        uint16_t target_leds = (level * max_distance) / 255;
+        if (target_leds > max_distance) target_leds = max_distance;
         
-        // 确保即使音量很低也有最小效果，并且最远处LED也能被点亮
-        if (active_leds == 0 && level > 5) {
-            active_leds = 1;
+        // 确保即使音量很低也有最小效果
+        if (target_leds == 0 && level > 5) {
+            target_leds = 1;
         }
         
-        // 确保音量最大时能覆盖所有LED（包括最远处的LED）
-        if (level >= 200) {  // 当音量达到80%以上时
-            active_leds = max_distance;  // 覆盖所有LED
-        }
-        
-        // ESP_LOGI(TAG, "VoiceEffectTask: level=%d, active_leds=%d, max_distance=%d, is_input=%d", 
-                //  level, active_leds, max_distance, is_input);
+        // ESP_LOGI(TAG, "VoiceEffectTask: level=%d, target_leds=%d, max_distance=%d, is_input=%d", 
+        //          level, target_leds, max_distance, is_input);
         
         // 清除所有LED
         led_strip_clear(led->led_strip_);
@@ -492,12 +487,20 @@ void WS2812Led::VoiceEffectTask(void* param) {
                 distance_from_center = i - center_right;
             }
             
-            // 如果距离在活跃范围内，计算亮度
-            if (distance_from_center < active_leds) {
-                // 根据距离计算亮度，越靠近中心越亮（使用固定的最大距离，确保亮度不变化）
+            // 计算每个LED的亮度，实现逐个点亮效果
+            if (distance_from_center < target_leds) {
+                // 完全点亮的LED（距离小于目标数量）
                 uint8_t position_brightness = 255 - ((distance_from_center * 255) / max_distance);
-                brightness = position_brightness;  // 亮度固定，不随active_leds变化
-                
+                brightness = position_brightness;
+            } else if (distance_from_center == target_leds) {
+                // 当前正在点亮的LED（距离等于目标数量）
+                // 计算这个LED应该亮到什么程度
+                uint8_t base_brightness = 255 - ((distance_from_center * 255) / max_distance);
+                uint8_t level_fraction = (level * max_distance) % 255;  // 音量的余数部分
+                brightness = (base_brightness * level_fraction) / 255;
+            } else {
+                // 距离大于目标数量的LED保持关闭
+                brightness = 0;
             }
             
             // 设置颜色（用户输入用蓝色，系统输出用绿色）

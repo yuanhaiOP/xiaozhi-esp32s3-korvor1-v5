@@ -3,9 +3,14 @@
 #include "codecs/es8311_audio_codec.h"
 #include "application.h"
 #include "button.h"
+#include "multi_button.h"
 #include "config.h"
 #include "i2c_device.h"
 #include "led/ws2812_led.h"
+
+// ADC校准函数声明
+void start_adc_calibration();
+
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -19,6 +24,7 @@
 class Esp32S3Korvo1V5Board : public WifiBoard {
 private:
     Button boot_button_;
+    MultiButton* multi_button_;
     i2c_master_bus_handle_t i2c_bus_;
     WS2812Led* ws2812_led_;
 
@@ -87,6 +93,120 @@ private:
             }
         });
 #endif
+
+        // 初始化多按键
+        InitializeMultiButtons();
+    }
+
+    void InitializeMultiButtons() {
+        // 定义6个按键的ADC值范围（根据实际测试结果调整）
+        std::vector<MultiButton::ButtonConfig> button_configs = {
+            {1, 300, 500, "Button1"},      // 按键1: ADC ~400 (Toggle chat)
+            {2, 2700, 2900, "Button2"},    // 按键2: ADC ~2794 (Volume up)
+            {3, 2000, 2400, "Button3"},    // 按键3: ADC ~1889 (Volume down)
+            {4, 800, 1000, "Button4"},     // 按键4: ADC ~900 (Toggle LED)
+            {5, 1200, 1400, "Button5"},    // 按键5: ADC ~2279 (Reset WiFi)
+            {6, 1800, 1900, "Button6"}     // 按键6: ADC ~1250 (Toggle AEC)
+        };
+
+        multi_button_ = new MultiButton(MULTI_BUTTON_GPIO, button_configs);
+
+        // 设置按键回调函数
+        multi_button_->OnButtonPress(0, [this]() {
+            ESP_LOGI(TAG, "Button 1 pressed - Volume up");
+            // 在任务中执行音量调节
+            xTaskCreate([](void* param) {
+                auto* board = static_cast<Esp32S3Korvo1V5Board*>(param);
+                auto* codec = board->GetAudioCodec();
+                if (codec) {
+                    int current_vol = codec->output_volume();
+                    codec->SetOutputVolume(std::min(100, current_vol + 10));
+                }
+                vTaskDelete(nullptr);
+            }, "volume_up", 4096, this, 5, nullptr);
+        });
+
+        multi_button_->OnButtonPress(1, [this]() {
+            ESP_LOGI(TAG, "Button 2 pressed");
+            // 在任务中执行音量调节
+            // xTaskCreate([](void* param) {
+            //     auto* board = static_cast<Esp32S3Korvo1V5Board*>(param);
+            //     auto* codec = board->GetAudioCodec();
+            //     if (codec) {
+            //         int current_vol = codec->output_volume();
+            //         codec->SetOutputVolume(std::min(100, current_vol + 10));
+            //     }
+            //     vTaskDelete(nullptr);
+            // }, "volume_up", 4096, this, 5, nullptr);
+        });
+
+        multi_button_->OnButtonPress(2, [this]() {
+            ESP_LOGI(TAG, "Button 3 pressed");
+            // 在任务中执行LED控制
+            // xTaskCreate([](void* param) {
+            //     auto* board = static_cast<Esp32S3Korvo1V5Board*>(param);
+            //     auto* led = board->GetLed();
+            //     if (led) {
+            //         auto* ws2812_led = static_cast<WS2812Led*>(led);
+            //         if (ws2812_led->GetCurrentEffectState() == LedEffectState::BREATHING) {
+            //             ws2812_led->StopBreathingEffect();
+            //         } else {
+            //             ws2812_led->StartBreathingEffect();
+            //         }
+            //     }
+            //     vTaskDelete(nullptr);
+            // }, "led_toggle", 4096, this, 5, nullptr);
+        });
+
+        multi_button_->OnButtonPress(3, [this]() {
+            ESP_LOGI(TAG, "Button 4 pressed - volume down");
+            // 在任务中执行音量调节
+            xTaskCreate([](void* param) {
+                auto* board = static_cast<Esp32S3Korvo1V5Board*>(param);
+                auto* codec = board->GetAudioCodec();
+                if (codec) {
+                    int current_vol = codec->output_volume();
+                    codec->SetOutputVolume(std::max(0, current_vol - 10));
+                }
+                vTaskDelete(nullptr);
+            }, "volume_down", 4096, this, 5, nullptr);
+         
+        });
+
+        multi_button_->OnButtonPress(4, [this]() {
+            ESP_LOGI(TAG, "Button 5 pressed");
+            // // 在任务中执行WiFi重置，避免在定时器回调中直接调用
+            // xTaskCreate([](void* param) {
+            //     auto* board = static_cast<Esp32S3Korvo1V5Board*>(param);
+            //     board->ResetWifiConfiguration();
+            //     vTaskDelete(nullptr);
+            // }, "wifi_reset", 4096, this, 5, nullptr);
+        });
+
+        multi_button_->OnButtonPress(5, [this]() {
+            ESP_LOGI(TAG, "Button 6 pressed - Toggle chat state");
+            // 在任务中执行应用状态切换
+            xTaskCreate([](void* param) {
+                auto& app = Application::GetInstance();
+                app.ToggleChatState();
+                vTaskDelete(nullptr);
+            }, "toggle_chat", 4096, nullptr, 5, nullptr);
+        });
+
+        // 长按功能
+        multi_button_->OnButtonLongPress(0, [this]() {
+            ESP_LOGI(TAG, "Button 1 long pressed");
+            // 在任务中执行重启
+            // xTaskCreate([](void* param) {
+            //     vTaskDelay(pdMS_TO_TICKS(100)); // 短暂延迟确保日志输出
+            //     esp_restart();
+            // }, "force_reset", 4096, nullptr, 5, nullptr);
+        });
+
+        multi_button_->OnButtonLongPress(4, [this]() {
+            ESP_LOGI(TAG, "Button 5 long pressed");
+            // 这里可以添加恢复出厂设置的逻辑
+        });
     }
 
     void InitializeWS2812() {
@@ -95,14 +215,18 @@ private:
     }
 
 public:
-    Esp32S3Korvo1V5Board() : boot_button_(BOOT_BUTTON_GPIO), ws2812_led_(nullptr) {
+    Esp32S3Korvo1V5Board() : boot_button_(BOOT_BUTTON_GPIO), multi_button_(nullptr), ws2812_led_(nullptr) {
         ESP_LOGI(TAG, "Initializing ESP32-S3-KORVO1-V5 Board");
-        ESP_LOGI(TAG, "Hardware features: 3-array microphone, ES8311+ES7210 codecs, WS2812 LEDs, no display, no camera");
+        ESP_LOGI(TAG, "Hardware features: 3-array microphone, ES8311+ES7210 codecs, WS2812 LEDs, 6-button matrix, no display, no camera");
         
         InitializeI2c();
         I2cDetect();
         InitializeButtons();
         InitializeWS2812();
+        
+        // 启动ADC校准任务（用于调试和校准6个按键的ADC值）
+        // start_adc_calibration();
+        
         ESP_LOGI(TAG, "KORVO1-V5 board initialization completed");
     }
 
@@ -111,17 +235,21 @@ public:
             delete ws2812_led_;
             ws2812_led_ = nullptr;
         }
+        if (multi_button_) {
+            delete multi_button_;
+            multi_button_ = nullptr;
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        ESP_LOGI(TAG, "Creating audio codec with I2S pins: MCLK=%d, BCLK=%d, WS=%d, DOUT=%d, DIN=%d", 
-                 AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, 
-                 AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN);
-        ESP_LOGI(TAG, "ES8311 I2S pins: MCLK=%d, BCLK=%d, WS=%d, DOUT=%d", 
-                 AUDIO_ES8311_I2S_GPIO_MCLK, AUDIO_ES8311_I2S_GPIO_BCLK, 
-                 AUDIO_ES8311_I2S_GPIO_WS, AUDIO_ES8311_I2S_GPIO_DOUT);
-        ESP_LOGI(TAG, "Audio codec addresses: ES8311=0x%02x, ES7210=0x%02x, PA_PIN=%d", 
-                 AUDIO_CODEC_ES8311_ADDR, AUDIO_CODEC_ES7210_ADDR, AUDIO_CODEC_PA_PIN);
+        // ESP_LOGI(TAG, "Creating audio codec with I2S pins: MCLK=%d, BCLK=%d, WS=%d, DOUT=%d, DIN=%d", 
+        //          AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, 
+        //          AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN);
+        // ESP_LOGI(TAG, "ES8311 I2S pins: MCLK=%d, BCLK=%d, WS=%d, DOUT=%d", 
+        //          AUDIO_ES8311_I2S_GPIO_MCLK, AUDIO_ES8311_I2S_GPIO_BCLK, 
+        //          AUDIO_ES8311_I2S_GPIO_WS, AUDIO_ES8311_I2S_GPIO_DOUT);
+        // ESP_LOGI(TAG, "Audio codec addresses: ES8311=0x%02x, ES7210=0x%02x, PA_PIN=%d", 
+        //          AUDIO_CODEC_ES8311_ADDR, AUDIO_CODEC_ES7210_ADDR, AUDIO_CODEC_PA_PIN);
         
         static BoxAudioCodec audio_codec(
             i2c_bus_, 
