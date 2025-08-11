@@ -13,8 +13,7 @@
 #include "application.h"
 #include "display.h"
 #include "board.h"
-
-#define TAG "MCP"
+#include "robot_movement_controller.h"
 
 #define DEFAULT_TOOLCALL_STACK_SIZE 6144
 
@@ -100,6 +99,120 @@ void McpServer::AddCommonTools() {
                 }
                 auto question = properties["question"].value<std::string>();
                 return camera->Explain(question);
+            });
+    }
+
+    // 添加机器人移动控制工具
+    static RobotMovementController robot_controller(ROBOT_UART_PORT, ROBOT_UART_TX_PIN, ROBOT_UART_RX_PIN, ROBOT_UART_BAUD_RATE);
+    if (robot_controller.Initialize()) {
+        AddTool("self.robot.control_by_voice",
+            "Control robot movement through voice commands. This tool parses natural language voice commands and converts them to precise robot control instructions.\n"
+            "Supported commands:\n"
+            "  - Movement: '前进', '后退', '左转', '右转', '停止', 'go forward', 'turn left', etc.\n"
+            "  - Speed: '慢', '快', '中速', 'slow', 'fast', 'medium'\n"
+            "  - Duration: '3秒', '5 seconds'\n"
+            "  - Light: '开灯', '关灯', '3号灯', 'turn on light'\n"
+            "  - Special: '跳舞', 'dance'\n"
+            "Examples:\n"
+            "  - '前进' -> robot moves forward\n"
+            "  - '快一点左转' -> robot turns left quickly\n"
+            "  - '慢速前进3秒' -> robot moves forward slowly for 3 seconds\n"
+            "  - '打开3号灯' -> turns on light mode 3",
+            PropertyList({
+                Property("voice_command", kPropertyTypeString)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                std::string voice_command = properties["voice_command"].value<std::string>();
+                bool success = robot_controller.ProcessVoiceCommand(voice_command);
+                if (success) {
+                    return "{\"success\": true, \"message\": \"Robot command executed successfully\", \"command\": \"" + voice_command + "\"}";
+                } else {
+                    return "{\"success\": false, \"message\": \"Unknown or invalid robot command\", \"command\": \"" + voice_command + "\"}";
+                }
+            });
+
+        AddTool("self.robot.move",
+            "Direct robot movement control with linear and angular velocity.\n"
+            "Args:\n"
+            "  `direction`: Movement direction ('forward', 'backward', 'left', 'right', 'stop')\n"
+            "  `linear_speed`: Linear velocity in m/s (0.0 to 1.0, default 0.2)\n"
+            "  `angular_speed`: Angular velocity in rad/s (0.0 to 2.0, default 0.5)\n"
+            "  `duration`: Movement duration in seconds (0.0 for continuous, default 0.0)",
+            PropertyList({
+                Property("direction", kPropertyTypeString),
+                Property("linear_speed", kPropertyTypeInteger, 20, 0, 100),
+                Property("angular_speed", kPropertyTypeInteger, 50, 0, 200),
+                Property("duration", kPropertyTypeInteger, 0, 0, 60)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                std::string direction = properties["direction"].value<std::string>();
+                float linear_speed = properties["linear_speed"].value<int>() / 100.0f;
+                float angular_speed = properties["angular_speed"].value<int>() / 100.0f;
+                float duration = properties["duration"].value<int>();
+                
+                MovementCommand command = MovementCommand::UNKNOWN;
+                if (direction == "forward") command = MovementCommand::FORWARD;
+                else if (direction == "backward") command = MovementCommand::BACKWARD;
+                else if (direction == "left") command = MovementCommand::TURN_LEFT;
+                else if (direction == "right") command = MovementCommand::TURN_RIGHT;
+                else if (direction == "stop") command = MovementCommand::STOP;
+                
+                if (command == MovementCommand::UNKNOWN) {
+                    return "{\"success\": false, \"message\": \"Invalid direction: " + direction + "\"}";
+                }
+                
+                bool success = robot_controller.SendMovementCommand(command, linear_speed, angular_speed, duration);
+                return success ? "{\"success\": true, \"message\": \"Movement command sent\"}" : "{\"success\": false, \"message\": \"Failed to send movement command\"}";
+            });
+
+        AddTool("self.robot.light",
+            "Control robot light effects.\n"
+            "Args:\n"
+            "  `mode`: Light mode (0=off, 1-6=light effects)",
+            PropertyList({
+                Property("mode", kPropertyTypeInteger, 1, 0, 6)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                int mode = properties["mode"].value<int>();
+                bool success = robot_controller.SendLightCommand(mode);
+                return success ? "{\"success\": true, \"message\": \"Light command sent\"}" : "{\"success\": false, \"message\": \"Failed to send light command\"}";
+            });
+
+        AddTool("self.robot.set_velocity",
+            "Set robot linear and angular velocity directly.\n"
+            "Args:\n"
+            "  `linear_velocity`: Linear velocity in m/s (-1.0 to 1.0)\n"
+            "  `angular_velocity`: Angular velocity in rad/s (-2.0 to 2.0)",
+            PropertyList({
+                Property("linear_velocity", kPropertyTypeInteger, 0, -100, 100),
+                Property("angular_velocity", kPropertyTypeInteger, 0, -200, 200)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                float linear_vel = properties["linear_velocity"].value<int>() / 100.0f;
+                float angular_vel = properties["angular_velocity"].value<int>() / 100.0f;
+                
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "x%.3f y%.3f", angular_vel, linear_vel);
+                std::string command = buffer;
+                
+                // 直接发送UART命令
+                esp_err_t ret = uart_write_bytes(UART_NUM_0, command.c_str(), command.length());
+                if (ret == ESP_FAIL) {
+                    return "{\"success\": false, \"message\": \"Failed to send velocity command\"}";
+                }
+                
+                ESP_LOGI("RobotController", "Sent velocity command: %s (linear: %.3f m/s, angular: %.3f rad/s)", 
+                         command.c_str(), linear_vel, angular_vel);
+                
+                return "{\"success\": true, \"message\": \"Velocity command sent\", \"command\": \"" + command + "\"}";
+            });
+
+        AddTool("self.robot.stop",
+            "Stop all robot movement immediately.",
+            PropertyList(),
+            [](const PropertyList& properties) -> ReturnValue {
+                bool success = robot_controller.Stop();
+                return success ? "{\"success\": true, \"message\": \"Robot stopped\"}" : "{\"success\": false, \"message\": \"Failed to stop robot\"}";
             });
     }
 

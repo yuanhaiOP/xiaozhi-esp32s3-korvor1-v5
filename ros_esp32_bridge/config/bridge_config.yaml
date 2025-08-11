@@ -1,0 +1,10 @@
+esp32_robot_bridge:
+  # 串口配置
+  port_name: "/dev/ttyUSB0"
+  baud_rate: 115200
+  
+  # 速度控制参数
+  max_linear_speed: 1.0
+  max_angular_speed: 2.0
+  linear_scale_factor: 1.0
+  angular_scale_factor: 1.0 
