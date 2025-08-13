@@ -3,6 +3,8 @@
 #include <cstring>
 #include <sstream>
 #include <cmath>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 RobotMovementController::RobotMovementController(uart_port_t uart_port, int tx_pin, int rx_pin, int baud_rate)
     : uart_port_(uart_port), tx_pin_(tx_pin), rx_pin_(rx_pin), baud_rate_(baud_rate) {
@@ -49,6 +51,21 @@ void RobotMovementController::InitializeCommandMap() {
     command_map_["right"] = MovementCommand::TURN_RIGHT;
     command_map_["go right"] = MovementCommand::TURN_RIGHT;
     
+    // 向后转指令（转180度）
+    command_map_["向后转"] = MovementCommand::TURN_LEFT;
+    command_map_["向后转"] = MovementCommand::TURN_LEFT;
+    command_map_["向后转"] = MovementCommand::TURN_LEFT;
+    command_map_["turn around"] = MovementCommand::TURN_LEFT;
+    command_map_["turn back"] = MovementCommand::TURN_LEFT;
+    
+    // 转圈指令
+    command_map_["转一圈"] = MovementCommand::TURN_LEFT;
+    command_map_["转两圈"] = MovementCommand::TURN_LEFT;
+    command_map_["转三圈"] = MovementCommand::TURN_LEFT;
+    command_map_["turn one circle"] = MovementCommand::TURN_LEFT;
+    command_map_["turn two circles"] = MovementCommand::TURN_LEFT;
+    command_map_["turn three circles"] = MovementCommand::TURN_LEFT;
+    
     // 停止指令
     command_map_["停止"] = MovementCommand::STOP;
     command_map_["停下"] = MovementCommand::STOP;
@@ -76,14 +93,49 @@ void RobotMovementController::InitializeCommandMap() {
 }
 
 bool RobotMovementController::Initialize() {
-    // 对于UART0，我们直接使用系统已经配置好的UART，不重新初始化
+    ESP_LOGI(TAG, "Initializing UART%d for robot control", uart_port_);
+    
     if (uart_port_ == UART_NUM_0) {
-        ESP_LOGI(TAG, "Using system-configured UART0 for robot control");
+        // 对于UART0，我们需要确保它能正确工作
+        ESP_LOGI(TAG, "Initializing UART0 for robot control");
+        
+        // 检查UART0是否已经安装，并删除以重新安装
+        uart_driver_delete(uart_port_);
+        
+        // 配置UART0参数
+        uart_config_t uart_config = {
+            .baud_rate = baud_rate_,
+            .data_bits = UART_DATA_8_BITS,
+            .parity = UART_PARITY_DISABLE,
+            .stop_bits = UART_STOP_BITS_1,
+            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+            .source_clk = UART_SCLK_DEFAULT,
+        };
+        
+        esp_err_t ret = uart_driver_install(uart_port_, 1024, 0, 0, NULL, 0);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to install UART0 driver: %s", esp_err_to_name(ret));
+            return false;
+        }
+        
+        ret = uart_param_config(uart_port_, &uart_config);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to configure UART0: %s", esp_err_to_name(ret));
+            return false;
+        }
+        
+        // 对于UART0，使用默认引脚，不重新设置
         ESP_LOGI(TAG, "Robot movement controller ready on UART0, Baud:%d", baud_rate_);
+        
+        // 发送一个"激活"字节来确保UART0正常工作
+        uint8_t activate_byte = 0x00;
+        uart_write_bytes(uart_port_, &activate_byte, 1);
+        vTaskDelay(pdMS_TO_TICKS(10)); // 等待UART0稳定
+        
         return true;
     }
     
-    // 对于其他UART端口，正常初始化
+    // 对于其他UART端口，使用正常的UART配置
     uart_config_t uart_config = {
         .baud_rate = baud_rate_,
         .data_bits = UART_DATA_8_BITS,
@@ -93,12 +145,14 @@ bool RobotMovementController::Initialize() {
         .source_clk = UART_SCLK_DEFAULT,
     };
     
+    // 安装UART驱动
     esp_err_t ret = uart_driver_install(uart_port_, 1024, 0, 0, NULL, 0);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to install UART driver: %s", esp_err_to_name(ret));
         return false;
     }
     
+    // 配置UART参数
     ret = uart_param_config(uart_port_, &uart_config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure UART: %s", esp_err_to_name(ret));
@@ -111,7 +165,8 @@ bool RobotMovementController::Initialize() {
         ESP_LOGE(TAG, "Failed to set UART pins: %s", esp_err_to_name(ret));
         return false;
     }
-    ESP_LOGI(TAG, "Robot movement controller initialized on UART%d, TX:%d, RX:%d, Baud:%d", 
+    
+    ESP_LOGI(TAG, "Robot movement controller ready on UART%d, TX:%d, RX:%d, Baud:%d", 
              uart_port_, tx_pin_, rx_pin_, baud_rate_);
     return true;
 }
@@ -123,11 +178,17 @@ bool ContainsString(const std::string& text, const std::string& pattern) {
 
 // 简单的数字提取函数
 float ExtractNumber(const std::string& text, const std::string& pattern) {
-    size_t pos = text.find(pattern);
-    if (pos == std::string::npos) return 0.0f;
+    size_t pos;
+    if (pattern.empty()) {
+        // 如果pattern为空，在整个字符串中查找数字
+        pos = 0;
+    } else {
+        pos = text.find(pattern);
+        if (pos == std::string::npos) return 0.0f;
+    }
     
     // 查找数字
-    size_t start = pos + pattern.length();
+    size_t start = pos;
     while (start < text.length() && !isdigit(text[start]) && text[start] != '.') {
         start++;
     }
@@ -162,45 +223,51 @@ MovementParams RobotMovementController::ParseVoiceCommand(const std::string& voi
         }
     }
     
-    // 解析目标位姿：前进/后退 N 米；左转/右转 N 度/弧度
-    // 缺省距离与角度
-    const float default_distance = 0.5f; // 米
-    const float default_angle_rad = 3.1415926f / 6.0f; // 30°
-
-    // 距离解析
-    if (params.command == MovementCommand::FORWARD || params.command == MovementCommand::BACKWARD) {
-        float value = ExtractNumber(command_lower, "");
-        if (value <= 0.0f) value = default_distance;
-        params.distance_meters = (params.command == MovementCommand::FORWARD) ? value : -value;
-    }
-
-    // 角度解析（优先度→弧度关键字，其次度数）
+    // 简化的参数解析：只解析圈数
     if (params.command == MovementCommand::TURN_LEFT || params.command == MovementCommand::TURN_RIGHT) {
-        float value = 0.0f;
-        bool has_value = false;
-        if (ContainsString(command_lower, "弧度") || ContainsString(command_lower, "rad")) {
-            value = ExtractNumber(command_lower, "");
-            has_value = value > 0.0f;
+        // 检查是否有"圈"、"圈数"、"turn"等关键词
+        if (ContainsString(command_lower, "圈") || ContainsString(command_lower, "turn")) {
+            float circles = ExtractNumber(command_lower, "");
+            if (circles > 0.0f) {
+                // 一圈 = 2π弧度
+                params.angle_radians = circles * 2.0f * 3.1415926f;
+            } else {
+                // 默认转90度
+                params.angle_radians = 3.1415926f / 2.0f;
+            }
+        } else if (ContainsString(command_lower, "向后转") || ContainsString(command_lower, "turn around") || 
+                   ContainsString(command_lower, "turn back")) {
+            // 向后转 = 180度 = π弧度
+            params.angle_radians = 3.1415926f;
+        } else {
+            // 默认转90度
+            params.angle_radians = 3.1415926f / 2.0f;
         }
-        if (!has_value) {
-            // 解析度数并转换为弧度
-            value = ExtractNumber(command_lower, "");
-            if (value <= 0.0f) value = 30.0f; // 默认30°
-            value = value * 3.1415926f / 180.0f;
+        
+        // 左转为正角度，右转为负角度
+        if (params.command == MovementCommand::TURN_RIGHT) {
+            params.angle_radians = -params.angle_radians;
         }
-        params.angle_radians = (params.command == MovementCommand::TURN_LEFT) ? +value : -value;
     }
     
-    // 解析持续时间
-    if (ContainsString(command_lower, "秒") || ContainsString(command_lower, "second") || ContainsString(command_lower, "s")) {
-        params.duration = ExtractNumber(command_lower, "");
-    }
-    
-    // 解析灯光模式
-    if (ContainsString(command_lower, "号") || ContainsString(command_lower, "mode")) {
-        float mode = ExtractNumber(command_lower, "");
-        if (mode >= 1 && mode <= 6) {
-            params.light_mode = static_cast<int>(mode);
+    // 前进/后退的距离解析
+    if (params.command == MovementCommand::FORWARD || params.command == MovementCommand::BACKWARD) {
+        // 检查是否有距离关键词
+        if (ContainsString(command_lower, "米") || ContainsString(command_lower, "m") || 
+            ContainsString(command_lower, "米") || ContainsString(command_lower, "meter")) {
+            float distance = ExtractNumber(command_lower, "");
+            if (distance > 0.0f) {
+                params.distance_meters = distance;
+            } else {
+                params.distance_meters = 0.5f; // 默认0.5米
+            }
+        } else {
+            params.distance_meters = 0.5f; // 默认0.5米
+        }
+        
+        // 后退为负距离
+        if (params.command == MovementCommand::BACKWARD) {
+            params.distance_meters = -params.distance_meters;
         }
     }
     
@@ -267,23 +334,36 @@ void RobotMovementController::SendUartCommand(const std::string& command) {
 }
 
 bool RobotMovementController::ProcessVoiceCommand(const std::string& voice_command) {
-    MovementParams params = ParseVoiceCommand(voice_command);
+    ESP_LOGI(TAG, "=== ProcessVoiceCommand called with: '%s' ===", voice_command.c_str());
     
+    // 测试串口是否工作
+    // printf("=== UART TEST: ProcessVoiceCommand called ===\n");
+    // printf("Voice command: %s\n", voice_command.c_str());
+    
+    MovementParams params = ParseVoiceCommand(voice_command);
     if (params.command == MovementCommand::UNKNOWN) {
         ESP_LOGW(TAG, "Unknown voice command: %s", voice_command.c_str());
         return false;
     }
     
-    // 生成数据帧并发送
+    // 生成x[位置] y[角度]格式的命令字符串用于日志
+    char command_buffer[64];
+    snprintf(command_buffer, sizeof(command_buffer), "x%.3f y%.3f", 
+             params.distance_meters, params.angle_radians);
+    
+    ESP_LOGI(TAG, "Processed voice command: '%s' -> %s", 
+             voice_command.c_str(), command_buffer);
+    
+    // 生成数据帧并发送（使用原有的数据帧机制）
     uint8_t frame[ROBOT_FRAME_LENGTH];
     switch (params.command) {
         case MovementCommand::FORWARD:
         case MovementCommand::BACKWARD:
-            CreateMoveFrame(0.0f, params.distance_meters, frame);
+            CreateMoveFrame(params.distance_meters, 0.0f, frame);
             break;
         case MovementCommand::TURN_LEFT:
         case MovementCommand::TURN_RIGHT:
-            CreateMoveFrame(params.angle_radians, 0.0f, frame);
+            CreateMoveFrame(0.0f, params.angle_radians, frame);
             break;
         case MovementCommand::STOP:
             CreateStopFrame(frame);
@@ -305,8 +385,10 @@ bool RobotMovementController::ProcessVoiceCommand(const std::string& voice_comma
     // 发送数据帧
     SendFrame(frame, ROBOT_FRAME_LENGTH);
     
-    ESP_LOGI(TAG, "Processed voice command: '%s' (distance: %.3f m, angle: %.3f rad, duration: %.1f s)", 
-             voice_command.c_str(), params.distance_meters, params.angle_radians, params.duration);
+    // 等待一小段时间确保串口发送完成
+    vTaskDelay(pdMS_TO_TICKS(20));
+    
+    ESP_LOGI(TAG, "Voice command execution completed: %s", voice_command.c_str());
     
     return true;
 }
@@ -316,8 +398,8 @@ bool RobotMovementController::SendMovementCommand(MovementCommand command, float
     params.command = command;
     params.duration = duration;
     // 兼容现有接口参数：
-    // 当为前进/后退时，使用 linear_speed 作为“距离(米)”；
-    // 当为转向时，使用 angular_speed 作为“角度(弧度)”。
+    // 当为前进/后退时，使用 linear_speed 作为"距离(米)"；
+    // 当为转向时，使用 angular_speed 作为"角度(弧度)"。
     if (command == MovementCommand::FORWARD) {
         params.distance_meters = std::fabs(linear_speed);
         params.angle_radians = 0.0f;
@@ -475,6 +557,9 @@ void RobotMovementController::CreateStopFrame(uint8_t* frame) {
 
 // 发送数据帧
 void RobotMovementController::SendFrame(const uint8_t* frame, size_t length) {
+    uint8_t heartbeat = 0xFF;
+    uart_write_bytes(uart_port_, &heartbeat, 1);
+    vTaskDelay(pdMS_TO_TICKS(1)); // 短暂延迟
     ESP_LOGI(TAG, "Sending frame: ");
     for (size_t i = 0; i < length; i++) {
         printf("%02X ", frame[i]);
