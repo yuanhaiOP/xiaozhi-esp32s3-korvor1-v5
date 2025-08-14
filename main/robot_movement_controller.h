@@ -57,6 +57,18 @@ private:
     // 解析语音指令
     MovementParams ParseVoiceCommand(const std::string& voice_command);
     
+    // 解析中文数字的辅助函数
+    float ParseChineseNumber(const std::string& chinese_text);
+    
+    // 检查是否是中文数字的辅助函数
+    bool IsChineseNumber(const std::string& utf8_char);
+    
+    // 提取数字的辅助函数（包括阿拉伯数字和中文数字）
+    float ExtractNumber(const std::string& text, const std::string& pattern);
+    
+    // 字符串包含检查的辅助函数
+    bool ContainsString(const std::string& text, const std::string& pattern);
+    
     // 发送UART命令
     void SendUartCommand(const std::string& command);
     

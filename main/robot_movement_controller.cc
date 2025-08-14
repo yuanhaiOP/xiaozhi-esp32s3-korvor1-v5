@@ -3,6 +3,7 @@
 #include <cstring>
 #include <sstream>
 #include <cmath>
+#include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -172,12 +173,12 @@ bool RobotMovementController::Initialize() {
 }
 
 // 简单的字符串查找函数
-bool ContainsString(const std::string& text, const std::string& pattern) {
+bool RobotMovementController::ContainsString(const std::string& text, const std::string& pattern) {
     return text.find(pattern) != std::string::npos;
 }
 
 // 简单的数字提取函数
-float ExtractNumber(const std::string& text, const std::string& pattern) {
+float RobotMovementController::ExtractNumber(const std::string& text, const std::string& pattern) {
     size_t pos;
     if (pattern.empty()) {
         // 如果pattern为空，在整个字符串中查找数字
@@ -187,19 +188,176 @@ float ExtractNumber(const std::string& text, const std::string& pattern) {
         if (pos == std::string::npos) return 0.0f;
     }
     
-    // 查找数字
+    // 查找数字（包括阿拉伯数字和中文数字）
     size_t start = pos;
+    bool found_number = false;
+    
+    // 先尝试查找阿拉伯数字
     while (start < text.length() && !isdigit(text[start]) && text[start] != '.') {
         start++;
     }
-    if (start >= text.length()) return 0.0f;
     
-    size_t end = start;
-    while (end < text.length() && (isdigit(text[end]) || text[end] == '.')) {
-        end++;
+    if (start < text.length() && (isdigit(text[start]) || text[start] == '.')) {
+        found_number = true;
+        // 阿拉伯数字处理
+        size_t end = start;
+        while (end < text.length() && (isdigit(text[end]) || text[end] == '.')) {
+            end++;
+        }
+        return std::stof(text.substr(start, end - start));
     }
     
-    return std::stof(text.substr(start, end - start));
+    // 如果没有找到阿拉伯数字，尝试查找中文数字
+    start = pos;
+    while (start < text.length()) {
+        // 检查是否是中文数字字符 - 使用更安全的方法
+        unsigned char c = static_cast<unsigned char>(text[start]);
+        // 检查是否是中文字符范围 (0xE0-0xEF for UTF-8 3-byte sequences)
+        if (c >= 0xE0 && c <= 0xEF) {
+            // 这是一个可能的UTF-8中文字符，检查后续字节
+            if (start + 2 < text.length()) {
+                // 简单的UTF-8检查 - 后续字节应该在0x80-0xBF范围内
+                unsigned char b1 = static_cast<unsigned char>(text[start + 1]);
+                unsigned char b2 = static_cast<unsigned char>(text[start + 2]);
+                if (b1 >= 0x80 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF) {
+                    // 提取完整的UTF-8字符进行匹配
+                    std::string utf8_char = text.substr(start, 3);
+                    if (IsChineseNumber(utf8_char)) {
+                        found_number = true;
+                        break;
+                    }
+                }
+            }
+        }
+        start++;
+    }
+    
+    if (found_number) {
+        // 解析中文数字
+        return ParseChineseNumber(text.substr(start));
+    }
+    
+    return 0.0f;
+}
+
+// 检查是否是中文数字的辅助函数
+bool RobotMovementController::IsChineseNumber(const std::string& utf8_char) {
+    // 定义中文数字的UTF-8字节序列
+    static const std::vector<std::string> chinese_numbers = {
+        "\xE4\xB8\x80",  // 一
+        "\xE4\xBA\x8C",  // 二
+        "\xE4\xB8\x89",  // 三
+        "\xE5\x9B\x9B",  // 四
+        "\xE4\xBA\x94",  // 五
+        "\xE5\x85\xAD",  // 六
+        "\xE4\xB8\x83",  // 七
+        "\xE5\x85\xAB",  // 八
+        "\xE4\xB9\x9D",  // 九
+        "\xE5\x8D\x81",  // 十
+        "\xE7\x99\xBE",  // 百
+        "\xE5\x8D\x83",  // 千
+        "\xE4\xB8\x87",  // 万
+        "\xE9\x9B\xB6",  // 零
+        "\xE4\xB8\xA4"   // 两
+    };
+    
+    for (const auto& num : chinese_numbers) {
+        if (utf8_char == num) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 解析中文数字的辅助函数
+float RobotMovementController::ParseChineseNumber(const std::string& chinese_text) {
+    float result = 0.0f;
+    float current = 0.0f;
+    float multiplier = 1.0f;
+    
+    for (size_t i = 0; i < chinese_text.length(); i++) {
+        // 检查是否是UTF-8中文字符
+        if (static_cast<unsigned char>(chinese_text[i]) >= 0xE0 && 
+            static_cast<unsigned char>(chinese_text[i]) <= 0xEF && 
+            i + 2 < chinese_text.length()) {
+            
+            std::string utf8_char = chinese_text.substr(i, 3);
+            i += 2; // 跳过后续两个字节
+            
+            // 解析中文数字
+            if (utf8_char == "\xE4\xB8\x80") {        // 一
+                current = 1.0f;
+            } else if (utf8_char == "\xE4\xBA\x8C") { // 二
+                current = 2.0f;
+            } else if (utf8_char == "\xE4\xB8\xA4") { // 两
+                current = 2.0f;
+            } else if (utf8_char == "\xE4\xB8\x89") { // 三
+                current = 3.0f;
+            } else if (utf8_char == "\xE5\x9B\x9B") { // 四
+                current = 4.0f;
+            } else if (utf8_char == "\xE4\xBA\x94") { // 五
+                current = 5.0f;
+            } else if (utf8_char == "\xE5\x85\xAD") { // 六
+                current = 6.0f;
+            } else if (utf8_char == "\xE4\xB8\x83") { // 七
+                current = 7.0f;
+            } else if (utf8_char == "\xE5\x85\xAB") { // 八
+                current = 8.0f;
+            } else if (utf8_char == "\xE4\xB9\x9D") { // 九
+                current = 9.0f;
+            } else if (utf8_char == "\xE5\x8D\x81") { // 十
+                if (current == 0.0f) {
+                    current = 1.0f; // "十" = 10
+                }
+                multiplier = 10.0f;
+                result += current * multiplier;
+                current = 0.0f;
+            } else if (utf8_char == "\xE7\x99\xBE") { // 百
+                if (current == 0.0f) {
+                    current = 1.0f; // "百" = 100
+                }
+                multiplier = 100.0f;
+                result += current * multiplier;
+                current = 0.0f;
+            } else if (utf8_char == "\xE5\x8D\x83") { // 千
+                if (current == 0.0f) {
+                    current = 1.0f; // "千" = 1000
+                }
+                multiplier = 1000.0f;
+                result += current * multiplier;
+                current = 0.0f;
+            } else if (utf8_char == "\xE4\xB8\x87") { // 万
+                if (current == 0.0f) {
+                    current = 1.0f; // "万" = 10000
+                }
+                multiplier = 10000.0f;
+                result += current * multiplier;
+                current = 0.0f;
+            } else if (utf8_char == "\xE9\x9B\xB6") { // 零
+                // 零表示0，通常可以忽略
+                break;
+            } else {
+                // 遇到非数字字符，停止解析
+                if (current > 0.0f) {
+                    result += current;
+                }
+                return result;
+            }
+        } else {
+            // 遇到非中文字符，停止解析
+            if (current > 0.0f) {
+                result += current;
+            }
+            return result;
+        }
+    }
+    
+    // 处理最后的数字
+    if (current > 0.0f) {
+        result += current;
+    }
+    
+    return result;
 }
 
 MovementParams RobotMovementController::ParseVoiceCommand(const std::string& voice_command) {
@@ -274,64 +432,6 @@ MovementParams RobotMovementController::ParseVoiceCommand(const std::string& voi
     return params;
 }
 
-std::string RobotMovementController::GenerateMovementCommand(const MovementParams& params) {
-    uint8_t frame[ROBOT_FRAME_LENGTH];
-    
-    switch (params.command) {
-        case MovementCommand::FORWARD:
-        case MovementCommand::BACKWARD:
-            // x = distance (m), y = angle (rad)
-            CreateMoveFrame(params.distance_meters, 0.0f, frame);
-            break;
-        case MovementCommand::TURN_LEFT:
-        case MovementCommand::TURN_RIGHT:
-            // x = distance (m), y = angle (rad)
-            CreateMoveFrame(0.0f, params.angle_radians, frame);
-            break;
-        case MovementCommand::STOP:
-            CreateStopFrame(frame);
-            break;
-        case MovementCommand::DANCE:
-            CreateDanceFrame(frame);
-            break;
-        case MovementCommand::LIGHT_ON:
-            CreateLightFrame(params.light_mode, frame);
-            break;
-        case MovementCommand::LIGHT_OFF:
-            CreateLightFrame(0, frame);
-            break;
-        default:
-            CreateStopFrame(frame);
-            break;
-    }
-    
-    // 返回十六进制字符串用于日志
-    char hex_string[32];
-    snprintf(hex_string, sizeof(hex_string), "%02X%02X%02X%02X%02X%02X%02X%02X",
-             frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6], frame[7]);
-    
-    return std::string(hex_string);
-}
-
-void RobotMovementController::SendUartCommand(const std::string& command) {
-    ESP_LOGI(TAG, "Sending robot command: %s", command.c_str());
-    
-    // 对于UART0，我们使用printf直接输出到串口，这是最简单可靠的方法
-    if (uart_port_ == UART_NUM_0) {
-        // 使用printf直接输出到UART0，这是系统默认的日志输出方式
-        printf("%s\n", command.c_str());
-        ESP_LOGI(TAG, "Robot command sent via printf to UART0: %s", command.c_str());
-        return;
-    }
-    
-    // 对于其他UART端口，使用正常的UART发送
-    esp_err_t ret = uart_write_bytes(uart_port_, command.c_str(), command.length());
-    if (ret == ESP_FAIL) {
-        ESP_LOGE(TAG, "Failed to send UART command");
-    } else {
-        ESP_LOGI(TAG, "UART command sent successfully, length: %d", ret);
-    }
-}
 
 bool RobotMovementController::ProcessVoiceCommand(const std::string& voice_command) {
     ESP_LOGI(TAG, "=== ProcessVoiceCommand called with: '%s' ===", voice_command.c_str());
